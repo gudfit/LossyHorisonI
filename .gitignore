@@ -1,6 +1,4 @@
-scripts/
 .pytest_cache/
 .venv/
-examples/
 src/
 __pycache__/
