@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lossy-horizon"
+version = "0.1.0"
+description = "Lossy text compression experiments (PM/EPC/VQ+RE)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "LossyHorizon Authors" }]
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+]
+cli = [
+  "numpy>=1.24",
+  "transformers>=4.40",
+  "sacrebleu>=2.4",
+  "bert-score>=0.3.13",
+  # torch install is platform-specific; uv will resolve appropriate wheel
+  "torch",
+]
+
+[project.scripts]
+lh-compress = "lossy_horizon.cli.compress:main"
+lh-eval-rd = "lossy_horizon.cli.eval_rd:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["lossy_horizon*"]
+
