@@ -35,6 +35,9 @@ def main():
     ap.add_argument(
         "--pos-coding", choices=["min", "enumerative", "rle"], default="min"
     )
+    ap.add_argument(
+        "--half", action="store_true", help="Use fp16 inference where supported"
+    )
     args = ap.parse_args()
 
     ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
@@ -67,29 +70,30 @@ def main():
     )
 
     pm_csv = csvdir / "pm.csv"
-    run(
-        [
-            sys.executable,
-            "-m",
-            "lossy_horizon.cli.eval_rd",
-            "--codec",
-            "pm",
-            "--model",
-            args.model,
-            "--texts-file",
-            args.texts,
-            "--p-mask-list",
-            *[str(p) for p in args.p_mask],
-            "--seeds",
-            str(args.seeds),
-            "--seed-base",
-            str(args.seed_base),
-            "--pos-coding",
-            args.pos_coding,
-            "--out-csv",
-            str(pm_csv),
-        ]
-    )
+    pm_cmd = [
+        sys.executable,
+        "-m",
+        "lossy_horizon.cli.eval_rd",
+        "--codec",
+        "pm",
+        "--model",
+        args.model,
+        "--texts-file",
+        args.texts,
+        "--p-mask-list",
+        *[str(p) for p in args.p_mask],
+        "--seeds",
+        str(args.seeds),
+        "--seed-base",
+        str(args.seed_base),
+        "--pos-coding",
+        args.pos_coding,
+        "--out-csv",
+        str(pm_csv),
+    ]
+    if args.half:
+        pm_cmd.append("--half")
+    run(pm_cmd)
 
     epc_csv = csvdir / "epc.csv"
     cmd = [
@@ -124,34 +128,37 @@ def main():
             "--rank-calib-out",
             str(calib_dir),
         ]
+    if args.half:
+        cmd.append("--half")
     run(cmd)
 
     vqre_csv = csvdir / "vqre.csv"
-    run(
-        [
-            sys.executable,
-            "-m",
-            "lossy_horizon.cli.eval_vqre",
-            "--model",
-            args.model,
-            "--texts-file",
-            args.texts,
-            "--p-mask-list",
-            *[str(p) for p in args.p_mask],
-            "--rank-list",
-            *[str(k) for k in args.rank_list],
-            "--anchors-every",
-            *[str(a) for a in args.anchors_every],
-            "--seeds",
-            str(args.seeds),
-            "--seed-base",
-            str(args.seed_base),
-            "--pos-coding",
-            args.pos_coding,
-            "--out-csv",
-            str(vqre_csv),
-        ]
-    )
+    vq_cmd = [
+        sys.executable,
+        "-m",
+        "lossy_horizon.cli.eval_vqre",
+        "--model",
+        args.model,
+        "--texts-file",
+        args.texts,
+        "--p-mask-list",
+        *[str(p) for p in args.p_mask],
+        "--rank-list",
+        *[str(k) for k in args.rank_list],
+        "--anchors-every",
+        *[str(a) for a in args.anchors_every],
+        "--seeds",
+        str(args.seeds),
+        "--seed-base",
+        str(args.seed_base),
+        "--pos-coding",
+        args.pos_coding,
+        "--out-csv",
+        str(vqre_csv),
+    ]
+    if args.half:
+        vq_cmd.append("--half")
+    run(vq_cmd)
 
     run(
         [
@@ -200,6 +207,14 @@ def main():
         "anchors_every": args.anchors_every,
         "pos_coding": args.pos_coding,
         "seeds": args.seeds,
+        "half": args.half,
+        "env": {
+            "HF_HOME": os.environ.get("HF_HOME"),
+            "TRANSFORMERS_CACHE": os.environ.get("TRANSFORMERS_CACHE"),
+            "HF_DATASETS_CACHE": os.environ.get("HF_DATASETS_CACHE"),
+            "TOKENIZERS_PARALLELISM": os.environ.get("TOKENIZERS_PARALLELISM"),
+            "CUBLAS_WORKSPACE_CONFIG": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        },
         "outputs": {
             "pm_csv": str(pm_csv),
             "epc_csv": str(epc_csv),
@@ -211,6 +226,43 @@ def main():
     }
     with open(outdir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
+    readme = outdir / "README.md"
+    lines = []
+    lines.append("# Paper Run\n\n")
+    lines.append("## Environment\n")
+    for k in [
+        "HF_HOME",
+        "TRANSFORMERS_CACHE",
+        "HF_DATASETS_CACHE",
+        "TOKENIZERS_PARALLELISM",
+        "CUBLAS_WORKSPACE_CONFIG",
+    ]:
+        v = os.environ.get(k)
+        if v:
+            lines.append(f"export {k}={v}\n")
+    lines.append("\n## Commands\n")
+
+    def fmt(cmd):
+        return " ".join(str(c) for c in cmd)
+
+    lines.append(
+        f"python scripts/bootstrap_cache.py --model {args.model} --hf_home {args.hf_home}\n"
+    )
+    lines.append(fmt(pm_cmd) + "\n")
+    lines.append(fmt(cmd) + "\n")
+    lines.append(fmt(vq_cmd) + "\n")
+    lines.append("\n## Plots\n")
+    lines.append(
+        f"python scripts/plot_rd.py --csv {pm_csv} --codec pm --out {plotsdir / 'pm.png'}\n"
+    )
+    lines.append(
+        f"python scripts/plot_rd.py --csv {epc_csv} --codec epc --out {plotsdir / 'epc.png'}\n"
+    )
+    lines.append(
+        f"python scripts/plot_rd.py --csv {vqre_csv} --codec vqre --out {plotsdir / 'vqre.png'}\n"
+    )
+    readme.write_text("".join(lines), encoding="utf-8")
+
     print(f"\nAll done. Results in: {outdir}")
 
 

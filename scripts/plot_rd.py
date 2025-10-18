@@ -35,7 +35,12 @@ def main():
     for row in rows:
         if row.get("codec") != args.codec:
             continue
-        key = f"K={row.get('K','')}" if args.codec != "pm" else "PM"
+        if args.codec == "pm":
+            key = "PM"
+        elif args.codec == "vqre":
+            key = f"K={row.get('K','')}, A={row.get('anchors_every','')}"
+        else:
+            key = f"K={row.get('K','')}"
         groups[key].append(row)
 
     plt.figure(figsize=(6, 4))

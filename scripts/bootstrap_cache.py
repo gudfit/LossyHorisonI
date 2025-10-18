@@ -64,7 +64,7 @@ def main():
             )
         else:
             print(
-                f"Downloading dataset {args.dataset}/{args.dataset-config} [{args.dataset_split}] ..."
+                f"Downloading dataset {args.dataset}/{args.dataset_config} [{args.dataset_split}] ..."
             )
             try:
                 dataset = load_dataset(
