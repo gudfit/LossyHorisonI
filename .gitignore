@@ -1,4 +1,3 @@
-scripts/
 .pytest_cache/
 .venv/
 src/
