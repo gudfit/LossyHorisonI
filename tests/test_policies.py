@@ -43,4 +43,3 @@ def test_run_cap_enforced():
         forbidden=set(),
     )
     assert _max_run_length(mask_idx, n) <= cap
-
