@@ -2,10 +2,9 @@ from lossy_horizon.bits.bit_cost import positional_bits_cost_from_indices, comb_
 
 
 def test_positional_bits_enum_preferred_when_k0():
-    n = 32
     keep = []
     bits_pos, pos_method, bits_enum, bits_rle = positional_bits_cost_from_indices(
-        n, keep
+        32, keep
     )
     assert pos_method == "enumerative"
     assert bits_pos == bits_enum
@@ -13,10 +12,9 @@ def test_positional_bits_enum_preferred_when_k0():
 
 
 def test_positional_bits_rle_preferred_for_single_long_run():
-    n = 128
     keep = list(range(40, 56))
     bits_pos, pos_method, bits_enum, bits_rle = positional_bits_cost_from_indices(
-        n, keep
+        128, keep
     )
     assert pos_method == "rle"
     assert bits_pos == bits_rle
