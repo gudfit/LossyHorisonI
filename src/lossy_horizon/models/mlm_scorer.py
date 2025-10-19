@@ -97,7 +97,10 @@ class MLMScorer:
             true_ids = ids[0, chunk]
             p_true = probs_pos[torch.arange(len(chunk)), true_ids]
             p_true = torch.clamp(p_true, min=1e-12)
-            s_bits = -torch.log2(p_true).tolist()
+            # Note: ensure negation happens on the Tensor before converting
+            # to a Python list. Without parentheses, the unary minus would
+            # be applied to the resulting list, causing a TypeError.
+            s_bits = (-torch.log2(p_true)).tolist()
             for pos, s in zip(chunk, s_bits):
                 surprisals[pos] = float(s)
         return surprisals, tok, eligible
