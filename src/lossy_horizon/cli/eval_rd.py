@@ -7,6 +7,8 @@ from typing import List, Tuple, Dict
 import numpy as np
 import csv
 from datetime import datetime
+from tqdm.auto import tqdm
+from itertools import product
 
 from ..models import MLMScorer
 from ..policies import select_mask_set
@@ -91,6 +93,12 @@ def main():
     args = ap.parse_args()
 
     texts = read_texts(args.texts_file)
+    if args.codec == "pm":
+        combos = list(args.p_mask_list)
+    else:
+        combos = list(product(args.p_mask_list, args.rank_list))
+    total_iters = args.seeds * len(combos) * max(1, len(texts))
+    pbar = tqdm(total=total_iters, desc=f"RD[{args.codec.upper()}][{args.model}]")
     calib_texts = []
     if args.rank_calib_file:
         calib_texts = read_texts(args.rank_calib_file)
@@ -157,6 +165,7 @@ def main():
                     hyps.append(recon)
                     total_bits += payload.total_bits
                     total_chars += len(text)
+                    pbar.update(1)
                 bpc = total_bits / max(1, total_chars)
                 cfid = sum(char_fidelity(r, h) for r, h in zip(refs, hyps)) / max(
                     1, len(refs)
@@ -280,6 +289,7 @@ def main():
                             + payload.bits_corr_tok_ac
                         )
                         total_chars += len(text)
+                        pbar.update(1)
                     bpc = total_bits / max(1, total_chars)
                     bpc_ac = total_bits_ac / max(1, total_chars)
                     cf = sum(char_fidelity(r, h) for r, h in zip(refs, hyps)) / max(
@@ -319,6 +329,7 @@ def main():
                     f"EPC p_mask={p_mask:.2f}, K={K} -> BPC={mb:.4f} ± {sb:.4f}, CharFid={mf:.4f} ± {sf:.4f}, ChrF={chrf_str}, BERTScore={bert_str}"
                 )
 
+    pbar.close()
     if args.out_csv and args.codec == "epc":
         rows = []
         for p_mask in args.p_mask_list:

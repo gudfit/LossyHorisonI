@@ -82,6 +82,8 @@ class MLMScorer:
         B, T = ids.shape
         assert B == 1
         surprisals = [0.0] * T
+        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
+        max_len = max(2, max_len)
 
         all_idx = list(range(T)) if window_mask is None else window_mask
         specials = {
@@ -97,22 +99,60 @@ class MLMScorer:
             else:
                 eligible.append(i)
 
-        for start in range(0, len(eligible), max(1, batch_size)):
-            chunk = eligible[start : start + batch_size]
-            if not chunk:
-                continue
-            batch = ids.repeat(len(chunk), 1)
-            for bi, pos in enumerate(chunk):
-                batch[bi, pos] = self.mask_token_id
-            attn = tok.attention_mask.repeat(len(chunk), 1)
-            logits = self.model(input_ids=batch, attention_mask=attn).logits
-            probs_pos = torch.softmax(logits[torch.arange(len(chunk)), chunk], dim=-1)
-            true_ids = ids[0, chunk]
-            p_true = probs_pos[torch.arange(len(chunk)), true_ids]
-            p_true = torch.clamp(p_true, min=1e-12)
-            s_bits = (-torch.log2(p_true)).tolist()
-            for pos, s in zip(chunk, s_bits):
-                surprisals[pos] = float(s)
+        if T <= max_len:
+            for start in range(0, len(eligible), max(1, batch_size)):
+                chunk = eligible[start : start + batch_size]
+                if not chunk:
+                    continue
+                batch = ids.repeat(len(chunk), 1)
+                for bi, pos in enumerate(chunk):
+                    batch[bi, pos] = self.mask_token_id
+                attn = tok.attention_mask.repeat(len(chunk), 1)
+                logits = self.model(input_ids=batch, attention_mask=attn).logits
+                probs_pos = torch.softmax(
+                    logits[torch.arange(len(chunk)), chunk], dim=-1
+                )
+                true_ids = ids[0, chunk]
+                p_true = probs_pos[torch.arange(len(chunk)), true_ids]
+                p_true = torch.clamp(p_true, min=1e-12)
+                s_bits = (-torch.log2(p_true)).tolist()
+                for pos, s in zip(chunk, s_bits):
+                    surprisals[pos] = float(s)
+        else:
+            overlap = max(16, max_len // 4)
+            stride = max(1, max_len - overlap)
+            computed = [False] * T
+            win_start = 0
+            while win_start < T:
+                win_end = min(T, win_start + max_len)
+                win_chunk_abs = [
+                    i
+                    for i in eligible
+                    if (not computed[i]) and (win_start <= i < win_end)
+                ]
+                if win_chunk_abs:
+                    win_len = win_end - win_start
+                    batch = ids[:, win_start:win_end].repeat(len(win_chunk_abs), 1)
+                    rel_idx = [i - win_start for i in win_chunk_abs]
+                    for bi, pos_rel in enumerate(rel_idx):
+                        batch[bi, pos_rel] = self.mask_token_id
+                    attn = tok.attention_mask[:, win_start:win_end].repeat(
+                        len(win_chunk_abs), 1
+                    )
+                    logits = self.model(input_ids=batch, attention_mask=attn).logits
+                    probs_pos = torch.softmax(
+                        logits[torch.arange(len(win_chunk_abs)), rel_idx], dim=-1
+                    )
+                    true_ids = ids[0, win_chunk_abs]
+                    p_true = probs_pos[torch.arange(len(win_chunk_abs)), true_ids]
+                    p_true = torch.clamp(p_true, min=1e-12)
+                    s_bits = (-torch.log2(p_true)).tolist()
+                    for pos_abs, s in zip(win_chunk_abs, s_bits):
+                        surprisals[pos_abs] = float(s)
+                        computed[pos_abs] = True
+                if win_end == T:
+                    break
+                win_start += stride
         return surprisals, tok, eligible
 
     @torch.no_grad()
@@ -121,6 +161,9 @@ class MLMScorer:
     ) -> Tuple[Dict[int, int], Tokenised]:
         tok = self.tokenize(text)
         ids = tok.input_ids.clone()
+        B, T = ids.shape
+        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
+        max_len = max(2, max_len)
         specials = {
             self.tokenizer.cls_token_id,
             self.tokenizer.sep_token_id,
@@ -132,21 +175,53 @@ class MLMScorer:
             if int(ids[0, i]) in specials:
                 rank_by_index[i] = 1
 
-        for start in range(0, len(eligible), max(1, batch_size)):
-            chunk = eligible[start : start + batch_size]
-            if not chunk:
-                continue
-            batch = ids.repeat(len(chunk), 1)
-            for bi, pos in enumerate(chunk):
-                batch[bi, pos] = self.mask_token_id
-            attn = tok.attention_mask.repeat(len(chunk), 1)
-            logits = self.model(input_ids=batch, attention_mask=attn).logits
-            scores_pos = logits[torch.arange(len(chunk)), chunk]
-            true_ids = ids[0, chunk]
-            s_true = scores_pos[torch.arange(len(chunk)), true_ids]
-            ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
-            for pos, r in zip(chunk, ranks.tolist()):
-                rank_by_index[pos] = int(r)
+        if T <= max_len:
+            for start in range(0, len(eligible), max(1, batch_size)):
+                chunk = eligible[start : start + batch_size]
+                if not chunk:
+                    continue
+                batch = ids.repeat(len(chunk), 1)
+                for bi, pos in enumerate(chunk):
+                    batch[bi, pos] = self.mask_token_id
+                attn = tok.attention_mask.repeat(len(chunk), 1)
+                logits = self.model(input_ids=batch, attention_mask=attn).logits
+                scores_pos = logits[torch.arange(len(chunk)), chunk]
+                true_ids = ids[0, chunk]
+                s_true = scores_pos[torch.arange(len(chunk)), true_ids]
+                ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
+                for pos, r in zip(chunk, ranks.tolist()):
+                    rank_by_index[pos] = int(r)
+        else:
+            overlap = max(16, max_len // 4)
+            stride = max(1, max_len - overlap)
+            computed = {i: False for i in eligible}
+            win_start = 0
+            while win_start < T:
+                win_end = min(T, win_start + max_len)
+                win_chunk_abs = [
+                    i
+                    for i in eligible
+                    if (not computed[i]) and (win_start <= i < win_end)
+                ]
+                if win_chunk_abs:
+                    rel_idx = [i - win_start for i in win_chunk_abs]
+                    batch = ids[:, win_start:win_end].repeat(len(win_chunk_abs), 1)
+                    for bi, pos_rel in enumerate(rel_idx):
+                        batch[bi, pos_rel] = self.mask_token_id
+                    attn = tok.attention_mask[:, win_start:win_end].repeat(
+                        len(win_chunk_abs), 1
+                    )
+                    logits = self.model(input_ids=batch, attention_mask=attn).logits
+                    scores_pos = logits[torch.arange(len(win_chunk_abs)), rel_idx]
+                    true_ids = ids[0, win_chunk_abs]
+                    s_true = scores_pos[torch.arange(len(win_chunk_abs)), true_ids]
+                    ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
+                    for pos_abs, r in zip(win_chunk_abs, ranks.tolist()):
+                        rank_by_index[pos_abs] = int(r)
+                        computed[pos_abs] = True
+                if win_end == T:
+                    break
+                win_start += stride
         return rank_by_index, tok
 
     @torch.no_grad()
@@ -160,6 +235,9 @@ class MLMScorer:
     ) -> Dict[int, List[int]]:
         tok = self.tokenize(text)
         ids = tok.input_ids.clone()
+        B, T = ids.shape
+        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
+        max_len = max(2, max_len)
         specials = {
             self.tokenizer.cls_token_id,
             self.tokenizer.sep_token_id,
@@ -171,18 +249,50 @@ class MLMScorer:
             if int(ids[0, i]) in specials:
                 result[i] = [int(ids[0, i])]
 
-        for start in range(0, len(eligible), max(1, batch_size)):
-            chunk = eligible[start : start + batch_size]
-            if not chunk:
-                continue
-            batch = ids.repeat(len(chunk), 1)
-            for bi, pos in enumerate(chunk):
-                batch[bi, pos] = self.mask_token_id
-            attn = tok.attention_mask.repeat(len(chunk), 1)
-            logits = self.model(input_ids=batch, attention_mask=attn).logits
-            for bi, pos in enumerate(chunk):
-                topk = torch.topk(logits[bi, pos], k=k, dim=-1).indices.tolist()
-                result[pos] = [int(t) for t in topk]
+        if T <= max_len:
+            for start in range(0, len(eligible), max(1, batch_size)):
+                chunk = eligible[start : start + batch_size]
+                if not chunk:
+                    continue
+                batch = ids.repeat(len(chunk), 1)
+                for bi, pos in enumerate(chunk):
+                    batch[bi, pos] = self.mask_token_id
+                attn = tok.attention_mask.repeat(len(chunk), 1)
+                logits = self.model(input_ids=batch, attention_mask=attn).logits
+                for bi, pos in enumerate(chunk):
+                    topk = torch.topk(logits[bi, pos], k=k, dim=-1).indices.tolist()
+                    result[pos] = [int(t) for t in topk]
+        else:
+            overlap = max(16, max_len // 4)
+            stride = max(1, max_len - overlap)
+            computed = {i: False for i in eligible}
+            win_start = 0
+            while win_start < T:
+                win_end = min(T, win_start + max_len)
+                win_chunk_abs = [
+                    i
+                    for i in eligible
+                    if (not computed[i]) and (win_start <= i < win_end)
+                ]
+                if win_chunk_abs:
+                    rel_idx = [i - win_start for i in win_chunk_abs]
+                    batch = ids[:, win_start:win_end].repeat(len(win_chunk_abs), 1)
+                    for bi, pos_rel in enumerate(rel_idx):
+                        batch[bi, pos_rel] = self.mask_token_id
+                    attn = tok.attention_mask[:, win_start:win_end].repeat(
+                        len(win_chunk_abs), 1
+                    )
+                    logits = self.model(input_ids=batch, attention_mask=attn).logits
+                    for bi, pos_abs in enumerate(win_chunk_abs):
+                        pos_rel = rel_idx[bi]
+                        topk = torch.topk(
+                            logits[bi, pos_rel], k=k, dim=-1
+                        ).indices.tolist()
+                        result[pos_abs] = [int(t) for t in topk]
+                        computed[pos_abs] = True
+                if win_end == T:
+                    break
+                win_start += stride
         return result
 
     @torch.no_grad()
@@ -191,6 +301,9 @@ class MLMScorer:
     ) -> Tuple[Dict[int, int], Dict[int, List[int]], Tokenised]:
         tok = self.tokenize(text)
         ids = tok.input_ids.clone()
+        B, T = ids.shape
+        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
+        max_len = max(2, max_len)
         specials = {
             self.tokenizer.cls_token_id,
             self.tokenizer.sep_token_id,
@@ -204,24 +317,59 @@ class MLMScorer:
                 rank_by_index[i] = 1
                 topk_by_index[i] = [int(ids[0, i])]
 
-        for start in range(0, len(eligible), max(1, batch_size)):
-            chunk = eligible[start : start + batch_size]
-            if not chunk:
-                continue
-            batch = ids.repeat(len(chunk), 1)
-            for bi, pos in enumerate(chunk):
-                batch[bi, pos] = self.mask_token_id
-            attn = tok.attention_mask.repeat(len(chunk), 1)
-            logits = self.model(input_ids=batch, attention_mask=attn).logits
-            scores_pos = logits[torch.arange(len(chunk)), chunk]
-            topk = torch.topk(scores_pos, k=k, dim=-1).indices
-            for bi, pos in enumerate(chunk):
-                topk_by_index[pos] = [int(t) for t in topk[bi].tolist()]
-            true_ids = ids[0, chunk]
-            s_true = scores_pos[torch.arange(len(chunk)), true_ids]
-            ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
-            for pos, r in zip(chunk, ranks.tolist()):
-                rank_by_index[pos] = int(r)
+        if T <= max_len:
+            for start in range(0, len(eligible), max(1, batch_size)):
+                chunk = eligible[start : start + batch_size]
+                if not chunk:
+                    continue
+                batch = ids.repeat(len(chunk), 1)
+                for bi, pos in enumerate(chunk):
+                    batch[bi, pos] = self.mask_token_id
+                attn = tok.attention_mask.repeat(len(chunk), 1)
+                logits = self.model(input_ids=batch, attention_mask=attn).logits
+                scores_pos = logits[torch.arange(len(chunk)), chunk]
+                topk = torch.topk(scores_pos, k=k, dim=-1).indices
+                for bi, pos in enumerate(chunk):
+                    topk_by_index[pos] = [int(t) for t in topk[bi].tolist()]
+                true_ids = ids[0, chunk]
+                s_true = scores_pos[torch.arange(len(chunk)), true_ids]
+                ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
+                for pos, r in zip(chunk, ranks.tolist()):
+                    rank_by_index[pos] = int(r)
+        else:
+            overlap = max(16, max_len // 4)
+            stride = max(1, max_len - overlap)
+            computed = {i: False for i in eligible}
+            win_start = 0
+            while win_start < T:
+                win_end = min(T, win_start + max_len)
+                win_chunk_abs = [
+                    i
+                    for i in eligible
+                    if (not computed[i]) and (win_start <= i < win_end)
+                ]
+                if win_chunk_abs:
+                    rel_idx = [i - win_start for i in win_chunk_abs]
+                    batch = ids[:, win_start:win_end].repeat(len(win_chunk_abs), 1)
+                    for bi, pos_rel in enumerate(rel_idx):
+                        batch[bi, pos_rel] = self.mask_token_id
+                    attn = tok.attention_mask[:, win_start:win_end].repeat(
+                        len(win_chunk_abs), 1
+                    )
+                    logits = self.model(input_ids=batch, attention_mask=attn).logits
+                    scores_pos = logits[torch.arange(len(win_chunk_abs)), rel_idx]
+                    topk = torch.topk(scores_pos, k=k, dim=-1).indices
+                    for bi, pos_abs in enumerate(win_chunk_abs):
+                        topk_by_index[pos_abs] = [int(t) for t in topk[bi].tolist()]
+                    true_ids = ids[0, win_chunk_abs]
+                    s_true = scores_pos[torch.arange(len(win_chunk_abs)), true_ids]
+                    ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
+                    for pos_abs, r in zip(win_chunk_abs, ranks.tolist()):
+                        rank_by_index[pos_abs] = int(r)
+                        computed[pos_abs] = True
+                if win_end == T:
+                    break
+                win_start += stride
         return rank_by_index, topk_by_index, tok
 
     @torch.no_grad()
