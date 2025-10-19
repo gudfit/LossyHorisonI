@@ -90,6 +90,12 @@ def main():
         "--pos-coding", type=str, choices=["min", "enumerative", "rle"], default="min"
     )
     ap.add_argument("--half", action="store_true", help="Run inference in fp16 on CUDA")
+    ap.add_argument(
+        "--mask-batch-size",
+        type=int,
+        default=64,
+        help="Batch size for per-position masking queries to the LM",
+    )
     args = ap.parse_args()
 
     texts = read_texts(args.texts_file)
@@ -154,7 +160,9 @@ def main():
                     )
                     token_ids = tok.input_ids[0].tolist()
                     payload = enc.encode(token_ids, keep_idx)
-                    _, topk_by_index, _ = scorer.ranks_and_topk(text, mask_idx, k=1)
+                    _, topk_by_index, _ = scorer.ranks_and_topk(
+                        text, mask_idx, k=1, batch_size=args.mask_batch_size
+                    )
                     top1 = {
                         i: tk[0] if tk else token_ids[i]
                         for i, tk in topk_by_index.items()
@@ -267,7 +275,7 @@ def main():
                         )
                         token_ids = tok.input_ids[0].tolist()
                         ranks, topk_by_index, _ = scorer.ranks_and_topk(
-                            text, mask_idx, k=K
+                            text, mask_idx, k=K, batch_size=args.mask_batch_size
                         )
                         payload = enc.encode(token_ids, keep_idx, mask_idx, ranks)
                         top1 = {

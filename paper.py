@@ -44,6 +44,12 @@ def main():
     ap.add_argument(
         "--half", action="store_true", help="Use fp16 inference where supported"
     )
+    ap.add_argument(
+        "--mask-batch-size",
+        type=int,
+        default=64,
+        help="Batch size for per-position masking queries to the LM",
+    )
     args = ap.parse_args()
 
     ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
@@ -106,6 +112,7 @@ def main():
         ]
         if args.half:
             pm_cmd.append("--half")
+        pm_cmd += ["--mask-batch-size", str(args.mask_batch_size)]
         run(pm_cmd)
 
         epc_csv = csvdir_m / "epc.csv"
@@ -143,6 +150,7 @@ def main():
             ]
         if args.half:
             epc_cmd.append("--half")
+        epc_cmd += ["--mask-batch-size", str(args.mask_batch_size)]
         run(epc_cmd)
 
         vqre_csv = csvdir_m / "vqre.csv"
@@ -171,6 +179,7 @@ def main():
         ]
         if args.half:
             vq_cmd.append("--half")
+        vq_cmd += ["--mask-batch-size", str(args.mask_batch_size)]
         run(vq_cmd)
 
         run(

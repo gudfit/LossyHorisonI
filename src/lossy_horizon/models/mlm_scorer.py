@@ -131,25 +131,27 @@ class MLMScorer:
                     if (not computed[i]) and (win_start <= i < win_end)
                 ]
                 if win_chunk_abs:
-                    win_len = win_end - win_start
-                    batch = ids[:, win_start:win_end].repeat(len(win_chunk_abs), 1)
-                    rel_idx = [i - win_start for i in win_chunk_abs]
-                    for bi, pos_rel in enumerate(rel_idx):
-                        batch[bi, pos_rel] = self.mask_token_id
-                    attn = tok.attention_mask[:, win_start:win_end].repeat(
-                        len(win_chunk_abs), 1
-                    )
-                    logits = self.model(input_ids=batch, attention_mask=attn).logits
-                    probs_pos = torch.softmax(
-                        logits[torch.arange(len(win_chunk_abs)), rel_idx], dim=-1
-                    )
-                    true_ids = ids[0, win_chunk_abs]
-                    p_true = probs_pos[torch.arange(len(win_chunk_abs)), true_ids]
-                    p_true = torch.clamp(p_true, min=1e-12)
-                    s_bits = (-torch.log2(p_true)).tolist()
-                    for pos_abs, s in zip(win_chunk_abs, s_bits):
-                        surprisals[pos_abs] = float(s)
-                        computed[pos_abs] = True
+                    rel_all = [i - win_start for i in win_chunk_abs]
+                    for inner in range(0, len(win_chunk_abs), max(1, batch_size)):
+                        sub_abs = win_chunk_abs[inner : inner + max(1, batch_size)]
+                        sub_rel = rel_all[inner : inner + max(1, batch_size)]
+                        batch = ids[:, win_start:win_end].repeat(len(sub_abs), 1)
+                        for bi, pos_rel in enumerate(sub_rel):
+                            batch[bi, pos_rel] = self.mask_token_id
+                        attn = tok.attention_mask[:, win_start:win_end].repeat(
+                            len(sub_abs), 1
+                        )
+                        logits = self.model(input_ids=batch, attention_mask=attn).logits
+                        probs_pos = torch.softmax(
+                            logits[torch.arange(len(sub_abs)), sub_rel], dim=-1
+                        )
+                        true_ids = ids[0, sub_abs]
+                        p_true = probs_pos[torch.arange(len(sub_abs)), true_ids]
+                        p_true = torch.clamp(p_true, min=1e-12)
+                        s_bits = (-torch.log2(p_true)).tolist()
+                        for pos_abs, s in zip(sub_abs, s_bits):
+                            surprisals[pos_abs] = float(s)
+                            computed[pos_abs] = True
                 if win_end == T:
                     break
                 win_start += stride
@@ -204,21 +206,24 @@ class MLMScorer:
                     if (not computed[i]) and (win_start <= i < win_end)
                 ]
                 if win_chunk_abs:
-                    rel_idx = [i - win_start for i in win_chunk_abs]
-                    batch = ids[:, win_start:win_end].repeat(len(win_chunk_abs), 1)
-                    for bi, pos_rel in enumerate(rel_idx):
-                        batch[bi, pos_rel] = self.mask_token_id
-                    attn = tok.attention_mask[:, win_start:win_end].repeat(
-                        len(win_chunk_abs), 1
-                    )
-                    logits = self.model(input_ids=batch, attention_mask=attn).logits
-                    scores_pos = logits[torch.arange(len(win_chunk_abs)), rel_idx]
-                    true_ids = ids[0, win_chunk_abs]
-                    s_true = scores_pos[torch.arange(len(win_chunk_abs)), true_ids]
-                    ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
-                    for pos_abs, r in zip(win_chunk_abs, ranks.tolist()):
-                        rank_by_index[pos_abs] = int(r)
-                        computed[pos_abs] = True
+                    rel_all = [i - win_start for i in win_chunk_abs]
+                    for inner in range(0, len(win_chunk_abs), max(1, batch_size)):
+                        sub_abs = win_chunk_abs[inner : inner + max(1, batch_size)]
+                        sub_rel = rel_all[inner : inner + max(1, batch_size)]
+                        batch = ids[:, win_start:win_end].repeat(len(sub_abs), 1)
+                        for bi, pos_rel in enumerate(sub_rel):
+                            batch[bi, pos_rel] = self.mask_token_id
+                        attn = tok.attention_mask[:, win_start:win_end].repeat(
+                            len(sub_abs), 1
+                        )
+                        logits = self.model(input_ids=batch, attention_mask=attn).logits
+                        scores_pos = logits[torch.arange(len(sub_abs)), sub_rel]
+                        true_ids = ids[0, sub_abs]
+                        s_true = scores_pos[torch.arange(len(sub_abs)), true_ids]
+                        ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
+                        for pos_abs, r in zip(sub_abs, ranks.tolist()):
+                            rank_by_index[pos_abs] = int(r)
+                            computed[pos_abs] = True
                 if win_end == T:
                     break
                 win_start += stride
@@ -275,21 +280,24 @@ class MLMScorer:
                     if (not computed[i]) and (win_start <= i < win_end)
                 ]
                 if win_chunk_abs:
-                    rel_idx = [i - win_start for i in win_chunk_abs]
-                    batch = ids[:, win_start:win_end].repeat(len(win_chunk_abs), 1)
-                    for bi, pos_rel in enumerate(rel_idx):
-                        batch[bi, pos_rel] = self.mask_token_id
-                    attn = tok.attention_mask[:, win_start:win_end].repeat(
-                        len(win_chunk_abs), 1
-                    )
-                    logits = self.model(input_ids=batch, attention_mask=attn).logits
-                    for bi, pos_abs in enumerate(win_chunk_abs):
-                        pos_rel = rel_idx[bi]
-                        topk = torch.topk(
-                            logits[bi, pos_rel], k=k, dim=-1
-                        ).indices.tolist()
-                        result[pos_abs] = [int(t) for t in topk]
-                        computed[pos_abs] = True
+                    rel_all = [i - win_start for i in win_chunk_abs]
+                    for inner in range(0, len(win_chunk_abs), max(1, batch_size)):
+                        sub_abs = win_chunk_abs[inner : inner + max(1, batch_size)]
+                        sub_rel = rel_all[inner : inner + max(1, batch_size)]
+                        batch = ids[:, win_start:win_end].repeat(len(sub_abs), 1)
+                        for bi, pos_rel in enumerate(sub_rel):
+                            batch[bi, pos_rel] = self.mask_token_id
+                        attn = tok.attention_mask[:, win_start:win_end].repeat(
+                            len(sub_abs), 1
+                        )
+                        logits = self.model(input_ids=batch, attention_mask=attn).logits
+                        for bi, pos_abs in enumerate(sub_abs):
+                            pos_rel = sub_rel[bi]
+                            topk = torch.topk(
+                                logits[bi, pos_rel], k=k, dim=-1
+                            ).indices.tolist()
+                            result[pos_abs] = [int(t) for t in topk]
+                            computed[pos_abs] = True
                 if win_end == T:
                     break
                 win_start += stride
@@ -349,24 +357,27 @@ class MLMScorer:
                     if (not computed[i]) and (win_start <= i < win_end)
                 ]
                 if win_chunk_abs:
-                    rel_idx = [i - win_start for i in win_chunk_abs]
-                    batch = ids[:, win_start:win_end].repeat(len(win_chunk_abs), 1)
-                    for bi, pos_rel in enumerate(rel_idx):
-                        batch[bi, pos_rel] = self.mask_token_id
-                    attn = tok.attention_mask[:, win_start:win_end].repeat(
-                        len(win_chunk_abs), 1
-                    )
-                    logits = self.model(input_ids=batch, attention_mask=attn).logits
-                    scores_pos = logits[torch.arange(len(win_chunk_abs)), rel_idx]
-                    topk = torch.topk(scores_pos, k=k, dim=-1).indices
-                    for bi, pos_abs in enumerate(win_chunk_abs):
-                        topk_by_index[pos_abs] = [int(t) for t in topk[bi].tolist()]
-                    true_ids = ids[0, win_chunk_abs]
-                    s_true = scores_pos[torch.arange(len(win_chunk_abs)), true_ids]
-                    ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
-                    for pos_abs, r in zip(win_chunk_abs, ranks.tolist()):
-                        rank_by_index[pos_abs] = int(r)
-                        computed[pos_abs] = True
+                    rel_all = [i - win_start for i in win_chunk_abs]
+                    for inner in range(0, len(win_chunk_abs), max(1, batch_size)):
+                        sub_abs = win_chunk_abs[inner : inner + max(1, batch_size)]
+                        sub_rel = rel_all[inner : inner + max(1, batch_size)]
+                        batch = ids[:, win_start:win_end].repeat(len(sub_abs), 1)
+                        for bi, pos_rel in enumerate(sub_rel):
+                            batch[bi, pos_rel] = self.mask_token_id
+                        attn = tok.attention_mask[:, win_start:win_end].repeat(
+                            len(sub_abs), 1
+                        )
+                        logits = self.model(input_ids=batch, attention_mask=attn).logits
+                        scores_pos = logits[torch.arange(len(sub_abs)), sub_rel]
+                        topk = torch.topk(scores_pos, k=k, dim=-1).indices
+                        for bi, pos_abs in enumerate(sub_abs):
+                            topk_by_index[pos_abs] = [int(t) for t in topk[bi].tolist()]
+                        true_ids = ids[0, sub_abs]
+                        s_true = scores_pos[torch.arange(len(sub_abs)), true_ids]
+                        ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
+                        for pos_abs, r in zip(sub_abs, ranks.tolist()):
+                            rank_by_index[pos_abs] = int(r)
+                            computed[pos_abs] = True
                 if win_end == T:
                     break
                 win_start += stride

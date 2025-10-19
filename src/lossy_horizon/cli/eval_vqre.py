@@ -41,6 +41,12 @@ def main():
     ap.add_argument("--refine-topm", type=int, default=8)
     ap.add_argument("--out-csv", type=str, default=None)
     ap.add_argument("--half", action="store_true", help="Run inference in fp16 on CUDA")
+    ap.add_argument(
+        "--mask-batch-size",
+        type=int,
+        default=64,
+        help="Batch size for per-position masking queries to the LM",
+    )
     args = ap.parse_args()
 
     texts = read_texts(args.texts_file)
@@ -90,7 +96,9 @@ def main():
             cf_vals: List[float] = []
 
             for text in texts:
-                surprisals, tok, eligible = scorer.token_surprisal(text)
+                surprisals, tok, eligible = scorer.token_surprisal(
+                    text, batch_size=args.mask_batch_size
+                )
                 specials = {
                     scorer.tokenizer.cls_token_id,
                     scorer.tokenizer.sep_token_id,
@@ -105,7 +113,9 @@ def main():
                     eligible=eligible,
                 )
 
-                ranks, topk_by_index, _ = scorer.ranks_and_topk(text, mask_idx, k=K)
+                ranks, topk_by_index, _ = scorer.ranks_and_topk(
+                    text, mask_idx, k=K, batch_size=args.mask_batch_size
+                )
                 token_ids = ids_list
 
                 payload = enc.encode(token_ids, mask_idx, ranks, topk_by_index)
