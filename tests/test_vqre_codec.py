@@ -51,3 +51,29 @@ def test_vqre_rank2_recovers_second_candidate_and_anchors_survive():
         assert decoded_tokens[i] == token_ids[i]
     for i in mask_idx:
         assert decoded_tokens[i] == topk_by_index[i][1]
+
+
+def test_vqre_preserves_keep_positions_when_not_masked():
+    token_ids = [101, 202, 303, 404, 505, 606, 707]
+    anchors_every = 0
+    mask_idx = [1, 3, 5]
+    k = 4
+    ranks_by_index = {i: k + 100 for i in mask_idx}
+    topk_by_index = {i: [] for i in mask_idx}
+    predicted_top1 = {i: 999 for i in mask_idx}
+
+    encoder = VQREEncoder(
+        rank_threshold=k,
+        anchors_every=anchors_every,
+        vocab_size=50000,
+    )
+    payload = encoder.encode(token_ids, mask_idx, ranks_by_index, topk_by_index)
+    decoder = VQREDecoder(rank_threshold=k)
+    decoded_tokens = decoder.decode(
+        payload,
+        mask_idx,
+        topk_by_index,
+        predicted_top1,
+        original_token_ids=token_ids,
+    )
+    assert decoded_tokens == token_ids

@@ -1,4 +1,5 @@
+uv.lock
 .pytest_cache/
 .venv/
-src/
 __pycache__/
+*.egg-info/
