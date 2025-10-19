@@ -22,6 +22,12 @@ def _ensure_vq_state(
             EMAQuantiser(head_dim, cfg.codebook_k_v, cfg.decay)
             for _ in range(num_heads)
         ]
+        try:
+            device = next(attn_self.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
+        for m in qk + qv:
+            m.to(device)
         attn_self._vq_state = {
             "qk": nn.ModuleList(qk),
             "qv": nn.ModuleList(qv),

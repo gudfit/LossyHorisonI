@@ -56,6 +56,8 @@ class EMAQuantiser(nn.Module):
     def forward(
         self, z: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
+        if self.codebook.device != z.device:
+            self.to(z.device)
         z_flat = z.reshape(-1, z.shape[-1])
         # ||z - c||^2 = ||z||^2 + ||c||^2 - 2 z c^T
         z2 = (z_flat**2).sum(dim=1, keepdim=True)
@@ -247,7 +249,6 @@ def refine_decode(
         logits = model(input_ids=ids).logits  # [B, T, V]
         probs = F.softmax(logits, dim=-1)
         conf, pred = probs.max(dim=-1)  # [B, T]
-        # Uncertainty u = 1 - conf; pick top-M positions per batch
         B, T = conf.shape
         for b in range(B):
             u = 1.0 - conf[b]
