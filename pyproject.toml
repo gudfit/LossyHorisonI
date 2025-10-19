@@ -9,7 +9,13 @@ description = "Lossy text compression experiments (PM/EPC/VQ+RE)"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "LossyHorizon Authors" }]
-dependencies = []
+dependencies = [
+  "numpy>=1.24",
+  "transformers>=4.40",
+  "torch",
+  "sacrebleu>=2.4",
+  "bert-score>=0.3.13",
+]
 
 [project.optional-dependencies]
 test = [
@@ -20,7 +26,6 @@ cli = [
   "transformers>=4.40",
   "sacrebleu>=2.4",
   "bert-score>=0.3.13",
-  # torch install is platform-specific; uv will resolve appropriate wheel
   "torch",
 ]
 
@@ -34,4 +39,3 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["lossy_horizon*"]
-

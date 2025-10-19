@@ -22,7 +22,6 @@ def levenshtein(a: str, b: str) -> int:
 
 
 def char_fidelity(ref: str, hyp: str) -> float:
-    """Character-level fidelity = 1 - CER (normalized by max length)."""
     ed = levenshtein(ref, hyp)
     denom = max(1, max(len(ref), len(hyp)))
     return 1.0 - (ed / denom)
