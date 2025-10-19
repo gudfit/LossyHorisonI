@@ -5,6 +5,8 @@ import os
 import csv
 from datetime import datetime
 from statistics import mean, pstdev
+from tqdm.auto import tqdm
+from itertools import product
 from typing import List, Dict, Tuple
 
 from ..models import MLMScorer
@@ -47,6 +49,10 @@ def main():
     cfg = VQConfig()
     scorer.apply_vq(cfg, step_provider=lambda: 10_000)
 
+    combos = list(product(args.p_mask_list, args.rank_list, args.anchors_every))
+    total_iters = args.seeds * len(combos) * max(1, len(texts))
+    pbar = tqdm(total=total_iters, desc=f"VQ+RE[{args.model}]")
+
     try:
         import torch
 
@@ -66,90 +72,84 @@ def main():
 
     for s in range(args.seeds):
         set_global_seed(args.seed_base + s, deterministic=True)
-        for p_mask in args.p_mask_list:
-            for K in args.rank_list:
-                for ae in args.anchors_every:
-                    enc = VQREEncoder(
-                        rank_threshold=K,
-                        anchors_every=ae,
-                        vocab_size=scorer.tokenizer.vocab_size,
-                        ar_coder_anchors=NGramARCoder(
-                            order=3, vocab_size=scorer.tokenizer.vocab_size
-                        ),
-                        ar_coder_corr=NGramARCoder(
-                            order=3, vocab_size=scorer.tokenizer.vocab_size
-                        ),
+        for p_mask, K, ae in combos:
+            enc = VQREEncoder(
+                rank_threshold=K,
+                anchors_every=ae,
+                vocab_size=scorer.tokenizer.vocab_size,
+                ar_coder_anchors=NGramARCoder(
+                    order=3, vocab_size=scorer.tokenizer.vocab_size
+                ),
+                ar_coder_corr=NGramARCoder(
+                    order=3, vocab_size=scorer.tokenizer.vocab_size
+                ),
+            )
+            dec = VQREDecoder(rank_threshold=K)
+            total_bits = 0.0
+            total_chars = 0
+            cf_vals: List[float] = []
+
+            for text in texts:
+                surprisals, tok, eligible = scorer.token_surprisal(text)
+                specials = {
+                    scorer.tokenizer.cls_token_id,
+                    scorer.tokenizer.sep_token_id,
+                    scorer.tokenizer.pad_token_id,
+                }
+                ids_list = tok.input_ids[0].tolist()
+                forbidden = {i for i, tid in enumerate(ids_list) if tid in specials}
+                mask_idx, keep_idx = select_mask_set(
+                    surprisals,
+                    p_mask=p_mask,
+                    forbidden=forbidden,
+                    eligible=eligible,
+                )
+
+                ranks, topk_by_index, _ = scorer.ranks_and_topk(text, mask_idx, k=K)
+                token_ids = ids_list
+
+                payload = enc.encode(token_ids, mask_idx, ranks, topk_by_index)
+
+                top1 = {
+                    i: (tk[0] if tk else token_ids[i])
+                    for i, tk in topk_by_index.items()
+                }
+
+                full_ids = dec.decode(
+                    payload,
+                    mask_idx,
+                    topk_by_index,
+                    top1,
+                    original_token_ids=token_ids,
+                )
+                if args.refine_steps and args.refine_steps > 0:
+                    ids_t = torch.tensor(
+                        [full_ids], dtype=torch.long, device=scorer.device
                     )
-                    dec = VQREDecoder(rank_threshold=K)
-                    total_bits = 0.0
-                    total_chars = 0
-                    cf_vals: List[float] = []
-
-                    for text in texts:
-                        surprisals, tok, eligible = scorer.token_surprisal(text)
-                        specials = {
-                            scorer.tokenizer.cls_token_id,
-                            scorer.tokenizer.sep_token_id,
-                            scorer.tokenizer.pad_token_id,
-                        }
-                        ids_list = tok.input_ids[0].tolist()
-                        forbidden = {
-                            i for i, tid in enumerate(ids_list) if tid in specials
-                        }
-                        mask_idx, keep_idx = select_mask_set(
-                            surprisals,
-                            p_mask=p_mask,
-                            forbidden=forbidden,
-                            eligible=eligible,
-                        )
-
-                        ranks, topk_by_index, _ = scorer.ranks_and_topk(
-                            text, mask_idx, k=K
-                        )
-                        token_ids = ids_list
-
-                        payload = enc.encode(token_ids, mask_idx, ranks, topk_by_index)
-
-                        top1 = {
-                            i: (tk[0] if tk else token_ids[i])
-                            for i, tk in topk_by_index.items()
-                        }
-
-                        full_ids = dec.decode(
-                            payload,
-                            mask_idx,
-                            topk_by_index,
-                            top1,
-                            original_token_ids=token_ids,
-                        )
-                        if args.refine_steps and args.refine_steps > 0:
-                            ids_t = torch.tensor(
-                                [full_ids], dtype=torch.long, device=scorer.device
-                            )
-                            ids_t = refine_decode(
-                                scorer.tokenizer,
-                                scorer.model,
-                                ids_t,
-                                steps=args.refine_steps,
-                                topm=args.refine_topm,
-                            )
-                            full_ids = ids_t[0].tolist()
-                        recon = scorer.tokenizer.decode(
-                            full_ids, skip_special_tokens=True
-                        )
-
-                        total_bits += payload.total_bits
-                        total_chars += len(text)
-                        cf_vals.append(char_fidelity(text, recon))
-
-                    bpc = total_bits / max(1, total_chars)
-                    cf = sum(cf_vals) / max(1, len(cf_vals))
-                    results[(p_mask, K, ae)]["bpc"].append(bpc)
-                    results[(p_mask, K, ae)]["charfid"].append(cf)
-                    print(
-                        f"VQRE seed={s} p={p_mask:.2f} K={K} A={ae} -> BPC={bpc:.4f}, CharFid={cf:.4f}"
+                    ids_t = refine_decode(
+                        scorer.tokenizer,
+                        scorer.model,
+                        ids_t,
+                        steps=args.refine_steps,
+                        topm=args.refine_topm,
                     )
+                    full_ids = ids_t[0].tolist()
+                recon = scorer.tokenizer.decode(full_ids, skip_special_tokens=True)
 
+                total_bits += payload.total_bits
+                total_chars += len(text)
+                cf_vals.append(char_fidelity(text, recon))
+                pbar.update(1)
+
+            bpc = total_bits / max(1, total_chars)
+            cf = sum(cf_vals) / max(1, len(cf_vals))
+            results[(p_mask, K, ae)]["bpc"].append(bpc)
+            results[(p_mask, K, ae)]["charfid"].append(cf)
+            print(
+                f"VQRE seed={s} p={p_mask:.2f} K={K} A={ae} -> BPC={bpc:.4f}, CharFid={cf:.4f}"
+            )
+
+    pbar.close()
     if args.out_csv:
         rows = []
         for (p, K, ae), vals in results.items():

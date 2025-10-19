@@ -44,7 +44,22 @@ class MLMScorer:
         self.mask_token_id = self.tokenizer.mask_token_id
 
     def apply_vq(self, cfg: VQConfig, step_provider: Callable[[], int]) -> None:
-        apply_vq_to_bert(self.model, cfg, step_provider)
+        mt = getattr(self.model.config, "model_type", "")
+        mt = (mt or "").lower()
+        if mt == "bert":
+            from .bert_vq import apply_vq_to_bert
+
+            apply_vq_to_bert(self.model, cfg, step_provider)
+        elif mt == "roberta":
+            from .roberta_vq import apply_vq_to_roberta
+
+            apply_vq_to_roberta(self.model, cfg, step_provider)
+        elif mt in ("distilbert",):
+            from .distilbert_vq import apply_vq_to_distilbert
+
+            apply_vq_to_distilbert(self.model, cfg, step_provider)
+        else:
+            raise ValueError(f"VQ hooks not implemented for model_type={mt}")
 
     def tokenize(self, text: str) -> Tokenised:
         enc = self.tokenizer(text, return_tensors="pt")
@@ -90,16 +105,11 @@ class MLMScorer:
             for bi, pos in enumerate(chunk):
                 batch[bi, pos] = self.mask_token_id
             attn = tok.attention_mask.repeat(len(chunk), 1)
-            logits = self.model(
-                input_ids=batch, attention_mask=attn
-            ).logits  # [Bch, T, V]
+            logits = self.model(input_ids=batch, attention_mask=attn).logits
             probs_pos = torch.softmax(logits[torch.arange(len(chunk)), chunk], dim=-1)
             true_ids = ids[0, chunk]
             p_true = probs_pos[torch.arange(len(chunk)), true_ids]
             p_true = torch.clamp(p_true, min=1e-12)
-            # Note: ensure negation happens on the Tensor before converting
-            # to a Python list. Without parentheses, the unary minus would
-            # be applied to the resulting list, causing a TypeError.
             s_bits = (-torch.log2(p_true)).tolist()
             for pos, s in zip(chunk, s_bits):
                 surprisals[pos] = float(s)
@@ -130,10 +140,8 @@ class MLMScorer:
             for bi, pos in enumerate(chunk):
                 batch[bi, pos] = self.mask_token_id
             attn = tok.attention_mask.repeat(len(chunk), 1)
-            logits = self.model(
-                input_ids=batch, attention_mask=attn
-            ).logits  # [Bch, T, V]
-            scores_pos = logits[torch.arange(len(chunk)), chunk]  # [Bch, V]
+            logits = self.model(input_ids=batch, attention_mask=attn).logits
+            scores_pos = logits[torch.arange(len(chunk)), chunk]
             true_ids = ids[0, chunk]
             s_true = scores_pos[torch.arange(len(chunk)), true_ids]
             ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
@@ -171,9 +179,7 @@ class MLMScorer:
             for bi, pos in enumerate(chunk):
                 batch[bi, pos] = self.mask_token_id
             attn = tok.attention_mask.repeat(len(chunk), 1)
-            logits = self.model(
-                input_ids=batch, attention_mask=attn
-            ).logits  # [Bch, T, V]
+            logits = self.model(input_ids=batch, attention_mask=attn).logits
             for bi, pos in enumerate(chunk):
                 topk = torch.topk(logits[bi, pos], k=k, dim=-1).indices.tolist()
                 result[pos] = [int(t) for t in topk]
@@ -206,15 +212,11 @@ class MLMScorer:
             for bi, pos in enumerate(chunk):
                 batch[bi, pos] = self.mask_token_id
             attn = tok.attention_mask.repeat(len(chunk), 1)
-            logits = self.model(
-                input_ids=batch, attention_mask=attn
-            ).logits  # [Bch, T, V]
-            scores_pos = logits[torch.arange(len(chunk)), chunk]  # [Bch, V]
-            # Top-K from same scores
+            logits = self.model(input_ids=batch, attention_mask=attn).logits
+            scores_pos = logits[torch.arange(len(chunk)), chunk]
             topk = torch.topk(scores_pos, k=k, dim=-1).indices
             for bi, pos in enumerate(chunk):
                 topk_by_index[pos] = [int(t) for t in topk[bi].tolist()]
-            # Ranks from same scores
             true_ids = ids[0, chunk]
             s_true = scores_pos[torch.arange(len(chunk)), true_ids]
             ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
@@ -222,7 +224,6 @@ class MLMScorer:
                 rank_by_index[pos] = int(r)
         return rank_by_index, topk_by_index, tok
 
-    # Convenience aliases with explicit batched naming
     @torch.no_grad()
     def ranks_and_topk_batched(
         self, text: str, mask_indices: List[int], k: int, batch_size: int = 64
