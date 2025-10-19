@@ -65,6 +65,8 @@ def apply_vq_to_bert(
             encoder_attention_mask: Optional[torch.Tensor] = None,
             past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
             output_attentions: bool = False,
+            past_key_values: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+            **kwargs,
         ):
             mixed_query_layer = self_attn.query(hidden_states)  # [B, T, H*D]
 
@@ -79,14 +81,19 @@ def apply_vq_to_bert(
             query_layer = transpose_for_scores(mixed_query_layer)
 
             if encoder_hidden_states is not None:
+                pkv = past_key_value if past_key_value is not None else past_key_values
+                fw_kwargs = dict(kwargs)
+                if "past_key_values" in fw_kwargs:
+                    fw_kwargs.pop("past_key_values")
                 return orig_forward(
                     hidden_states,
                     attention_mask,
                     head_mask,
                     encoder_hidden_states,
                     encoder_attention_mask,
-                    past_key_value,
+                    pkv,
                     output_attentions,
+                    **fw_kwargs,
                 )
 
             # Self-attention
@@ -179,7 +186,6 @@ def apply_vq_to_bert(
                 outputs = outputs + (attention_probs,)
             return outputs
 
-        # Bind the new forward to this attention module
         attn.forward = patched_forward.__get__(attn, type(attn))
 
 
