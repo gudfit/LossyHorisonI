@@ -202,16 +202,22 @@ class VQREDecoder:
         mask_indices: List[int],
         topk_by_index: Dict[int, List[int]],
         predicted_top1: Dict[int, int],
+        original_token_ids: Optional[List[int]] = None,
     ) -> List[int]:
-        max_idx = -1
-        all_positions = set(mask_indices) | set(payload.anchor_positions)
-        if all_positions:
-            max_idx = max(all_positions)
-        n = max_idx + 1
-        full = [0] * n
+        if original_token_ids is not None:
+            n = len(original_token_ids)
+            full = list(original_token_ids)
+        else:
+            max_idx = -1
+            all_positions = set(mask_indices) | set(payload.anchor_positions)
+            if all_positions:
+                max_idx = max(all_positions)
+            n = max_idx + 1
+            full = [0] * n
 
         for pos, tid in zip(payload.anchor_positions, payload.anchor_token_ids):
-            full[pos] = tid
+            if 0 <= pos < n:
+                full[pos] = tid
 
         f_iter = iter(payload.flags)
         s_iter = iter(payload.corr_syms)

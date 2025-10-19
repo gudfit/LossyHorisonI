@@ -115,7 +115,13 @@ def main():
                             for i, tk in topk_by_index.items()
                         }
 
-                        full_ids = dec.decode(payload, mask_idx, topk_by_index, top1)
+                        full_ids = dec.decode(
+                            payload,
+                            mask_idx,
+                            topk_by_index,
+                            top1,
+                            original_token_ids=token_ids,
+                        )
                         if args.refine_steps and args.refine_steps > 0:
                             ids_t = torch.tensor(
                                 [full_ids], dtype=torch.long, device=scorer.device
