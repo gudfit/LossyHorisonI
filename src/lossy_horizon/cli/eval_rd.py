@@ -11,6 +11,7 @@ from tqdm.auto import tqdm
 from itertools import product
 
 from ..models import MLMScorer
+from ..metrics.char_fidelity import char_fidelity
 from ..policies import select_mask_set
 from ..codecs import PMEncoder, EPCEncoder, PMDecoder, EPCDecoder
 from ..bits import RankPMF, RankModel
@@ -25,32 +26,6 @@ try:
     from bert_score import score as bert_score
 except Exception:
     bert_score = None
-
-
-def levenshtein(a: str, b: str) -> int:
-    n, m = len(a), len(b)
-    if n == 0:
-        return m
-    if m == 0:
-        return n
-    dp = list(range(m + 1))
-    for i in range(1, n + 1):
-        prev = dp[0]
-        dp[0] = i
-        for j in range(1, m + 1):
-            temp = dp[j]
-            if a[i - 1] == b[j - 1]:
-                dp[j] = prev
-            else:
-                dp[j] = 1 + min(prev, dp[j], dp[j - 1])
-            prev = temp
-    return dp[m]
-
-
-def char_fidelity(ref: str, hyp: str) -> float:
-    ed = levenshtein(ref, hyp)
-    denom = max(1, max(len(ref), len(hyp)))
-    return 1.0 - (ed / denom)
 
 
 def msd(values: List[float]) -> Tuple[float, float]:
@@ -141,8 +116,11 @@ def main():
                 dec = PMDecoder(scorer.tokenizer)
                 total_bits = 0.0
                 total_chars = 0
-                refs: List[str] = []
-                hyps: List[str] = []
+                keep_refs = sacrebleu is not None or bert_score is not None
+                refs: List[str] = [] if keep_refs else []
+                hyps: List[str] = [] if keep_refs else []
+                cfid_sum = 0.0
+                n_items = 0
                 for text in texts:
                     surprisals, tok, eligible = scorer.token_surprisal(text)
                     specials = {
@@ -169,15 +147,16 @@ def main():
                     }
                     full_ids = dec.decode(payload, mask_idx, top1)
                     recon = scorer.tokenizer.decode(full_ids, skip_special_tokens=True)
-                    refs.append(text)
-                    hyps.append(recon)
+                    if keep_refs:
+                        refs.append(text)
+                        hyps.append(recon)
+                    cfid_sum += char_fidelity(text, recon)
+                    n_items += 1
                     total_bits += payload.total_bits
                     total_chars += len(text)
                     pbar.update(1)
                 bpc = total_bits / max(1, total_chars)
-                cfid = sum(char_fidelity(r, h) for r, h in zip(refs, hyps)) / max(
-                    1, len(refs)
-                )
+                cfid = cfid_sum / max(1, n_items)
                 results[p_mask]["bpc"].append(bpc)
                 results[p_mask]["charfid"].append(cfid)
                 if sacrebleu is not None:
@@ -254,8 +233,11 @@ def main():
                     total_bits = 0.0
                     total_bits_ac = 0.0
                     total_chars = 0
-                    refs: List[str] = []
-                    hyps: List[str] = []
+                    keep_refs = sacrebleu is not None or bert_score is not None
+                    refs: List[str] = [] if keep_refs else []
+                    hyps: List[str] = [] if keep_refs else []
+                    cfid_sum = 0.0
+                    n_items = 0
                     for text in texts:
                         surprisals, tok, eligible = scorer.token_surprisal(text)
                         specials = {
@@ -286,8 +268,11 @@ def main():
                         recon = scorer.tokenizer.decode(
                             full_ids, skip_special_tokens=True
                         )
-                        refs.append(text)
-                        hyps.append(recon)
+                        if keep_refs:
+                            refs.append(text)
+                            hyps.append(recon)
+                        cfid_sum += char_fidelity(text, recon)
+                        n_items += 1
                         total_bits += payload.total_bits
                         total_bits_ac += (
                             payload.bits_pos
@@ -300,9 +285,7 @@ def main():
                         pbar.update(1)
                     bpc = total_bits / max(1, total_chars)
                     bpc_ac = total_bits_ac / max(1, total_chars)
-                    cf = sum(char_fidelity(r, h) for r, h in zip(refs, hyps)) / max(
-                        1, len(refs)
-                    )
+                    cf = cfid_sum / max(1, n_items)
                     results[(p_mask, K)]["bpc"].append(bpc)
                     results[(p_mask, K)]["bpc_ac"].append(bpc_ac)
                     results[(p_mask, K)]["charfid"].append(cf)
