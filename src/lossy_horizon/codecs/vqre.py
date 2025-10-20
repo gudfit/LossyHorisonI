@@ -254,6 +254,11 @@ def refine_decode(
     max_len = int(getattr(model.config, "max_position_embeddings", 512))
     max_len = max(2, max_len)
     B, T = ids.shape
+    # Match confidences dtype to model parameters (respects fp16)
+    try:
+        model_dtype = next(model.parameters()).dtype
+    except StopIteration:
+        model_dtype = torch.float32
 
     # Special tokens shouldn't be refined
     specials = {
@@ -265,7 +270,7 @@ def refine_decode(
 
     for _ in range(max(0, steps)):
         # Collect confidences and predictions for full sequence
-        conf = torch.zeros(B, T, device=device, dtype=torch.float)
+        conf = torch.zeros(B, T, device=device, dtype=model_dtype)
         pred = torch.zeros(B, T, device=device, dtype=torch.long)
 
         if T <= max_len:
@@ -273,7 +278,7 @@ def refine_decode(
             logits = model(input_ids=ids, attention_mask=attn).logits  # [B, T, V]
             probs = F.softmax(logits, dim=-1)
             conf_step, pred_step = probs.max(dim=-1)  # [B, T]
-            conf.copy_(conf_step)
+            conf.copy_(conf_step.to(conf.dtype))
             pred.copy_(pred_step)
         else:
             # Sliding windows with overlap; take highest-confidence prediction per position
@@ -290,9 +295,10 @@ def refine_decode(
                 W = win_end - win_start
                 for b in range(B):
                     cur = conf[b, win_start:win_end]
-                    better = conf_step[b] > cur
+                    cs = conf_step[b].to(cur.dtype)
+                    better = cs > cur
                     # update where this window is more confident
-                    cur[better] = conf_step[b][better]
+                    cur[better] = cs[better]
                     pred[b, win_start:win_end][better] = pred_step[b][better]
                 if win_end == T:
                     break
