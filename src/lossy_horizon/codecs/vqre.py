@@ -244,15 +244,75 @@ def anchor_rate_bits(
 def refine_decode(
     tokenizer, model, input_ids: torch.Tensor, steps: int = 2, topm: int = 8
 ) -> torch.Tensor:
+    """Refine decoded sequence by iteratively replacing low-confidence tokens.
+
+    Uses sliding-window evaluation when sequence length exceeds the model's
+    max position embeddings to avoid indexing errors.
+    """
     ids = input_ids.clone()
+    device = ids.device
+    max_len = int(getattr(model.config, "max_position_embeddings", 512))
+    max_len = max(2, max_len)
+    B, T = ids.shape
+
+    # Special tokens shouldn't be refined
+    specials = {
+        getattr(tokenizer, "cls_token_id", None),
+        getattr(tokenizer, "sep_token_id", None),
+        getattr(tokenizer, "pad_token_id", None),
+        getattr(tokenizer, "mask_token_id", None),
+    }
+
     for _ in range(max(0, steps)):
-        logits = model(input_ids=ids).logits  # [B, T, V]
-        probs = F.softmax(logits, dim=-1)
-        conf, pred = probs.max(dim=-1)  # [B, T]
-        B, T = conf.shape
+        # Collect confidences and predictions for full sequence
+        conf = torch.zeros(B, T, device=device, dtype=torch.float)
+        pred = torch.zeros(B, T, device=device, dtype=torch.long)
+
+        if T <= max_len:
+            attn = torch.ones_like(ids, dtype=torch.long, device=device)
+            logits = model(input_ids=ids, attention_mask=attn).logits  # [B, T, V]
+            probs = F.softmax(logits, dim=-1)
+            conf_step, pred_step = probs.max(dim=-1)  # [B, T]
+            conf.copy_(conf_step)
+            pred.copy_(pred_step)
+        else:
+            # Sliding windows with overlap; take highest-confidence prediction per position
+            overlap = max(16, max_len // 4)
+            stride = max(1, max_len - overlap)
+            win_start = 0
+            while win_start < T:
+                win_end = min(T, win_start + max_len)
+                ids_win = ids[:, win_start:win_end]
+                attn = torch.ones_like(ids_win, dtype=torch.long, device=device)
+                logits = model(input_ids=ids_win, attention_mask=attn).logits
+                probs = F.softmax(logits, dim=-1)
+                conf_step, pred_step = probs.max(dim=-1)  # [B, W]
+                W = win_end - win_start
+                for b in range(B):
+                    cur = conf[b, win_start:win_end]
+                    better = conf_step[b] > cur
+                    # update where this window is more confident
+                    cur[better] = conf_step[b][better]
+                    pred[b, win_start:win_end][better] = pred_step[b][better]
+                if win_end == T:
+                    break
+                win_start += stride
+
+        # Choose globally least-confident tokens to refine, excluding specials
         for b in range(B):
             u = 1.0 - conf[b]
+            # mask out special tokens from refinement
+            if any(s is not None for s in specials):
+                ids_b = ids[b]
+                mask_bad = torch.zeros_like(u, dtype=torch.bool)
+                for s in specials:
+                    if s is None:
+                        continue
+                    mask_bad |= (ids_b == int(s))
+                # Set their uncertainty to -1 to avoid selection
+                u = u.masked_fill(mask_bad, -1.0)
             m = min(topm, T)
             idx = torch.topk(u, k=m).indices
             ids[b, idx] = pred[b, idx]
+
     return ids
