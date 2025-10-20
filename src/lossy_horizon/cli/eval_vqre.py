@@ -41,6 +41,7 @@ def main():
     ap.add_argument("--refine-topm", type=int, default=8)
     ap.add_argument("--out-csv", type=str, default=None)
     ap.add_argument("--half", action="store_true", help="Run inference in fp16 on CUDA")
+    ap.add_argument("--limit-texts", type=int, default=None, help="Use only first N texts")
     ap.add_argument(
         "--mask-batch-size",
         type=int,
@@ -50,6 +51,8 @@ def main():
     args = ap.parse_args()
 
     texts = read_texts(args.texts_file)
+    if args.limit_texts is not None and args.limit_texts > 0:
+        texts = texts[: args.limit_texts]
     scorer = MLMScorer(args.model)
 
     cfg = VQConfig()

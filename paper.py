@@ -50,6 +50,11 @@ def main():
         default=64,
         help="Batch size for per-position masking queries to the LM",
     )
+    ap.add_argument("--limit-texts", type=int, default=None, help="Use only first N texts")
+    ap.add_argument("--skip-pm", action="store_true", help="Skip PM stage")
+    ap.add_argument("--skip-epc", action="store_true", help="Skip EPC stage")
+    ap.add_argument("--skip-vqre", action="store_true", help="Skip VQ+RE stage")
+    ap.add_argument("--only-vqre", action="store_true", help="Run only VQ+RE stage")
     args = ap.parse_args()
 
     ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
@@ -69,6 +74,9 @@ def main():
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
     models = args.models or [args.model]
+    if args.only_vqre:
+        args.skip_pm = True
+        args.skip_epc = True
     for model_id in models:
         outdir_m = (outdir / model_id.replace("/", "_")).resolve()
         outdir_m.mkdir(parents=True, exist_ok=True)
@@ -113,7 +121,10 @@ def main():
         if args.half:
             pm_cmd.append("--half")
         pm_cmd += ["--mask-batch-size", str(args.mask_batch_size)]
-        run(pm_cmd)
+        if args.limit_texts:
+            pm_cmd += ["--limit-texts", str(args.limit_texts)]
+        if not args.skip_pm:
+            run(pm_cmd)
 
         epc_csv = csvdir_m / "epc.csv"
         epc_cmd = [
@@ -151,7 +162,10 @@ def main():
         if args.half:
             epc_cmd.append("--half")
         epc_cmd += ["--mask-batch-size", str(args.mask_batch_size)]
-        run(epc_cmd)
+        if args.limit_texts:
+            epc_cmd += ["--limit-texts", str(args.limit_texts)]
+        if not args.skip_epc:
+            run(epc_cmd)
 
         vqre_csv = csvdir_m / "vqre.csv"
         vq_cmd = [
@@ -180,44 +194,50 @@ def main():
         if args.half:
             vq_cmd.append("--half")
         vq_cmd += ["--mask-batch-size", str(args.mask_batch_size)]
-        run(vq_cmd)
+        if args.limit_texts:
+            vq_cmd += ["--limit-texts", str(args.limit_texts)]
+        if not args.skip_vqre:
+            run(vq_cmd)
 
-        run(
-            [
-                sys.executable,
-                "scripts/plot_rd.py",
-                "--csv",
-                str(pm_csv),
-                "--codec",
-                "pm",
-                "--out",
-                str(plotsdir_m / "pm.png"),
-            ]
-        )
-        run(
-            [
-                sys.executable,
-                "scripts/plot_rd.py",
-                "--csv",
-                str(epc_csv),
-                "--codec",
-                "epc",
-                "--out",
-                str(plotsdir_m / "epc.png"),
-            ]
-        )
-        run(
-            [
-                sys.executable,
-                "scripts/plot_rd.py",
-                "--csv",
-                str(vqre_csv),
-                "--codec",
-                "vqre",
-                "--out",
-                str(plotsdir_m / "vqre.png"),
-            ]
-        )
+        if not args.skip_pm:
+            run(
+                [
+                    sys.executable,
+                    "scripts/plot_rd.py",
+                    "--csv",
+                    str(pm_csv),
+                    "--codec",
+                    "pm",
+                    "--out",
+                    str(plotsdir_m / "pm.png"),
+                ]
+            )
+        if not args.skip_epc:
+            run(
+                [
+                    sys.executable,
+                    "scripts/plot_rd.py",
+                    "--csv",
+                    str(epc_csv),
+                    "--codec",
+                    "epc",
+                    "--out",
+                    str(plotsdir_m / "epc.png"),
+                ]
+            )
+        if not args.skip_vqre:
+            run(
+                [
+                    sys.executable,
+                    "scripts/plot_rd.py",
+                    "--csv",
+                    str(vqre_csv),
+                    "--codec",
+                    "vqre",
+                    "--out",
+                    str(plotsdir_m / "vqre.png"),
+                ]
+            )
 
         manifest = {
             "timestamp": ts,

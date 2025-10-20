@@ -71,9 +71,12 @@ def main():
         default=64,
         help="Batch size for per-position masking queries to the LM",
     )
+    ap.add_argument("--limit-texts", type=int, default=None, help="Use only first N texts")
     args = ap.parse_args()
 
     texts = read_texts(args.texts_file)
+    if args.limit_texts is not None and args.limit_texts > 0:
+        texts = texts[: args.limit_texts]
     if args.codec == "pm":
         combos = list(args.p_mask_list)
     else:
