@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..codecs.vqre import EMAQuantiser, inverse_sigmoid_alpha, utilisation_kl, VQConfig
 
@@ -131,12 +132,34 @@ def apply_vq_to_distilbert(model: nn.Module, cfg: VQConfig, step_provider):
                 scores = scores.masked_fill(mask_, torch.finfo(scores.dtype).min)
 
             attn_weights = torch.softmax(scores, dim=-1)
-            attn_weights = self_attn.dropout_attn(attn_weights)
+            if hasattr(self_attn, "dropout_attn") and callable(
+                getattr(self_attn, "dropout_attn", None)
+            ):
+                attn_weights = self_attn.dropout_attn(attn_weights)
+            elif hasattr(self_attn, "dropout_prob"):
+                attn_weights = F.dropout(
+                    attn_weights,
+                    p=float(self_attn.dropout_prob),
+                    training=self_attn.training,
+                )
+            else:
+                drop = getattr(self_attn, "dropout", None)
+                if isinstance(drop, nn.Dropout):
+                    attn_weights = drop(attn_weights)
 
             context = torch.matmul(attn_weights, v_q)
             context = merge_heads(context)
             context = self_attn.out_lin(context)
-            context = self_attn.dropout(context)
+            if hasattr(self_attn, "dropout") and isinstance(
+                getattr(self_attn, "dropout", None), nn.Dropout
+            ):
+                context = self_attn.dropout(context)
+            elif hasattr(self_attn, "dropout_prob"):
+                context = F.dropout(
+                    context,
+                    p=float(self_attn.dropout_prob),
+                    training=self_attn.training,
+                )
 
             if output_attentions:
                 return (context, attn_weights)
