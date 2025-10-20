@@ -43,6 +43,19 @@ class MLMScorer:
         self.model.eval()
         self.mask_token_id = self.tokenizer.mask_token_id
 
+    def _effective_max_len(self) -> int:
+        """Return a safe max sequence length for windowing.
+        Some models (e.g., RoBERTa) reserve 2 extra positions for special tokens
+        in their position embeddings. To avoid out-of-bounds in SDPA paths, we
+        shrink the window by 2 for roberta-like models.
+        """
+        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
+        mtype = str(getattr(self.model.config, "model_type", "")).lower()
+        if "roberta" in mtype:
+            # Account for reserved positions (<s>, </s>) in position embeddings
+            max_len = max(2, max_len - 2)
+        return max_len
+
     def apply_vq(self, cfg: VQConfig, step_provider: Callable[[], int]) -> None:
         mt = getattr(self.model.config, "model_type", "")
         mt = (mt or "").lower()
@@ -82,8 +95,7 @@ class MLMScorer:
         B, T = ids.shape
         assert B == 1
         surprisals = [0.0] * T
-        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
-        max_len = max(2, max_len)
+        max_len = self._effective_max_len()
 
         all_idx = list(range(T)) if window_mask is None else window_mask
         specials = {
@@ -109,11 +121,10 @@ class MLMScorer:
                     batch[bi, pos] = self.mask_token_id
                 attn = tok.attention_mask.repeat(len(chunk), 1)
                 logits = self.model(input_ids=batch, attention_mask=attn).logits
-                probs_pos = torch.softmax(
-                    logits[torch.arange(len(chunk)), chunk], dim=-1
-                )
+                arange_idx = torch.arange(len(chunk), device=logits.device)
+                probs_pos = torch.softmax(logits[arange_idx, chunk], dim=-1)
                 true_ids = ids[0, chunk]
-                p_true = probs_pos[torch.arange(len(chunk)), true_ids]
+                p_true = probs_pos[arange_idx, true_ids]
                 p_true = torch.clamp(p_true, min=1e-12)
                 s_bits = (-torch.log2(p_true)).tolist()
                 for pos, s in zip(chunk, s_bits):
@@ -142,11 +153,10 @@ class MLMScorer:
                             len(sub_abs), 1
                         )
                         logits = self.model(input_ids=batch, attention_mask=attn).logits
-                        probs_pos = torch.softmax(
-                            logits[torch.arange(len(sub_abs)), sub_rel], dim=-1
-                        )
+                        arange_idx = torch.arange(len(sub_abs), device=logits.device)
+                        probs_pos = torch.softmax(logits[arange_idx, sub_rel], dim=-1)
                         true_ids = ids[0, sub_abs]
-                        p_true = probs_pos[torch.arange(len(sub_abs)), true_ids]
+                        p_true = probs_pos[arange_idx, true_ids]
                         p_true = torch.clamp(p_true, min=1e-12)
                         s_bits = (-torch.log2(p_true)).tolist()
                         for pos_abs, s in zip(sub_abs, s_bits):
@@ -164,8 +174,7 @@ class MLMScorer:
         tok = self.tokenize(text)
         ids = tok.input_ids.clone()
         B, T = ids.shape
-        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
-        max_len = max(2, max_len)
+        max_len = self._effective_max_len()
         specials = {
             self.tokenizer.cls_token_id,
             self.tokenizer.sep_token_id,
@@ -187,9 +196,10 @@ class MLMScorer:
                     batch[bi, pos] = self.mask_token_id
                 attn = tok.attention_mask.repeat(len(chunk), 1)
                 logits = self.model(input_ids=batch, attention_mask=attn).logits
-                scores_pos = logits[torch.arange(len(chunk)), chunk]
+                arange_idx = torch.arange(len(chunk), device=logits.device)
+                scores_pos = logits[arange_idx, chunk]
                 true_ids = ids[0, chunk]
-                s_true = scores_pos[torch.arange(len(chunk)), true_ids]
+                s_true = scores_pos[arange_idx, true_ids]
                 ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
                 for pos, r in zip(chunk, ranks.tolist()):
                     rank_by_index[pos] = int(r)
@@ -217,9 +227,10 @@ class MLMScorer:
                             len(sub_abs), 1
                         )
                         logits = self.model(input_ids=batch, attention_mask=attn).logits
-                        scores_pos = logits[torch.arange(len(sub_abs)), sub_rel]
+                        arange_idx = torch.arange(len(sub_abs), device=logits.device)
+                        scores_pos = logits[arange_idx, sub_rel]
                         true_ids = ids[0, sub_abs]
-                        s_true = scores_pos[torch.arange(len(sub_abs)), true_ids]
+                        s_true = scores_pos[arange_idx, true_ids]
                         ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
                         for pos_abs, r in zip(sub_abs, ranks.tolist()):
                             rank_by_index[pos_abs] = int(r)
@@ -241,8 +252,7 @@ class MLMScorer:
         tok = self.tokenize(text)
         ids = tok.input_ids.clone()
         B, T = ids.shape
-        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
-        max_len = max(2, max_len)
+        max_len = self._effective_max_len()
         specials = {
             self.tokenizer.cls_token_id,
             self.tokenizer.sep_token_id,
@@ -310,8 +320,7 @@ class MLMScorer:
         tok = self.tokenize(text)
         ids = tok.input_ids.clone()
         B, T = ids.shape
-        max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
-        max_len = max(2, max_len)
+        max_len = self._effective_max_len()
         specials = {
             self.tokenizer.cls_token_id,
             self.tokenizer.sep_token_id,
@@ -335,12 +344,13 @@ class MLMScorer:
                     batch[bi, pos] = self.mask_token_id
                 attn = tok.attention_mask.repeat(len(chunk), 1)
                 logits = self.model(input_ids=batch, attention_mask=attn).logits
-                scores_pos = logits[torch.arange(len(chunk)), chunk]
+                arange_idx = torch.arange(len(chunk), device=logits.device)
+                scores_pos = logits[arange_idx, chunk]
                 topk = torch.topk(scores_pos, k=k, dim=-1).indices
                 for bi, pos in enumerate(chunk):
                     topk_by_index[pos] = [int(t) for t in topk[bi].tolist()]
                 true_ids = ids[0, chunk]
-                s_true = scores_pos[torch.arange(len(chunk)), true_ids]
+                s_true = scores_pos[arange_idx, true_ids]
                 ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
                 for pos, r in zip(chunk, ranks.tolist()):
                     rank_by_index[pos] = int(r)
@@ -368,12 +378,13 @@ class MLMScorer:
                             len(sub_abs), 1
                         )
                         logits = self.model(input_ids=batch, attention_mask=attn).logits
-                        scores_pos = logits[torch.arange(len(sub_abs)), sub_rel]
+                        arange_idx = torch.arange(len(sub_abs), device=logits.device)
+                        scores_pos = logits[arange_idx, sub_rel]
                         topk = torch.topk(scores_pos, k=k, dim=-1).indices
                         for bi, pos_abs in enumerate(sub_abs):
                             topk_by_index[pos_abs] = [int(t) for t in topk[bi].tolist()]
                         true_ids = ids[0, sub_abs]
-                        s_true = scores_pos[torch.arange(len(sub_abs)), true_ids]
+                        s_true = scores_pos[arange_idx, true_ids]
                         ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
                         for pos_abs, r in zip(sub_abs, ranks.tolist()):
                             rank_by_index[pos_abs] = int(r)
