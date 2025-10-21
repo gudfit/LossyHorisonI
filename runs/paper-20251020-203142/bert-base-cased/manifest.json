@@ -1,0 +1,42 @@
+{
+  "timestamp": "20251020-203142",
+  "model": "bert-base-cased",
+  "texts": "examples/wikitext103_test.txt",
+  "calib": null,
+  "p_mask": [
+    0.2,
+    0.4,
+    0.6,
+    0.8
+  ],
+  "rank_list": [
+    4,
+    16,
+    64,
+    128
+  ],
+  "anchors_every": [
+    0,
+    16,
+    32,
+    64
+  ],
+  "pos_coding": "min",
+  "seeds": 5,
+  "half": true,
+  "env": {
+    "HF_HOME": "/home/ubuntu/LossyHorisonI/cache/hf",
+    "TRANSFORMERS_CACHE": "/home/ubuntu/LossyHorisonI/cache/hf/transformers",
+    "HF_DATASETS_CACHE": "/home/ubuntu/LossyHorisonI/cache/hf/datasets",
+    "TOKENIZERS_PARALLELISM": "false",
+    "CUBLAS_WORKSPACE_CONFIG": ":4096:8"
+  },
+  "outputs": {
+    "pm_csv": "/home/ubuntu/LossyHorisonI/runs/paper-20251020-203142/bert-base-cased/csv/pm.csv",
+    "epc_csv": "/home/ubuntu/LossyHorisonI/runs/paper-20251020-203142/bert-base-cased/csv/epc.csv",
+    "vqre_csv": "/home/ubuntu/LossyHorisonI/runs/paper-20251020-203142/bert-base-cased/csv/vqre.csv",
+    "pm_plot": "/home/ubuntu/LossyHorisonI/runs/paper-20251020-203142/bert-base-cased/plots/pm.png",
+    "epc_plot": "/home/ubuntu/LossyHorisonI/runs/paper-20251020-203142/bert-base-cased/plots/epc.png",
+    "vqre_plot": "/home/ubuntu/LossyHorisonI/runs/paper-20251020-203142/bert-base-cased/plots/vqre.png"
+  }
+}
