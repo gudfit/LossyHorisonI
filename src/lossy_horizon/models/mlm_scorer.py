@@ -44,11 +44,6 @@ class MLMScorer:
         self.mask_token_id = self.tokenizer.mask_token_id
 
     def _effective_max_len(self) -> int:
-        """Return a safe max sequence length for windowing.
-        Some models (e.g., RoBERTa) reserve 2 extra positions for special tokens
-        in their position embeddings. To avoid out-of-bounds in SDPA paths, we
-        shrink the window by 2 for roberta-like models.
-        """
         max_len = int(getattr(self.model.config, "max_position_embeddings", 512))
         mtype = str(getattr(self.model.config, "model_type", "")).lower()
         if "roberta" in mtype:
@@ -112,15 +107,26 @@ class MLMScorer:
                 eligible.append(i)
 
         if T <= max_len:
-            for start in range(0, len(eligible), max(1, batch_size)):
-                chunk = eligible[start : start + batch_size]
+            i = 0
+            chunk_size = max(1, batch_size)
+            while i < len(eligible):
+                size = min(chunk_size, len(eligible) - i)
+                chunk = eligible[i : i + size]
                 if not chunk:
-                    continue
+                    break
                 batch = ids.repeat(len(chunk), 1)
                 for bi, pos in enumerate(chunk):
                     batch[bi, pos] = self.mask_token_id
                 attn = tok.attention_mask.repeat(len(chunk), 1)
-                logits = self.model(input_ids=batch, attention_mask=attn).logits
+                try:
+                    logits = self.model(input_ids=batch, attention_mask=attn).logits
+                except torch.cuda.OutOfMemoryError:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if chunk_size == 1:
+                        raise
+                    chunk_size = max(1, chunk_size // 2)
+                    continue
                 arange_idx = torch.arange(len(chunk), device=logits.device)
                 probs_pos = torch.softmax(logits[arange_idx, chunk], dim=-1)
                 true_ids = ids[0, chunk]
@@ -129,6 +135,7 @@ class MLMScorer:
                 s_bits = (-torch.log2(p_true)).tolist()
                 for pos, s in zip(chunk, s_bits):
                     surprisals[pos] = float(s)
+                i += size
         else:
             overlap = max(16, max_len // 4)
             stride = max(1, max_len - overlap)
@@ -143,16 +150,29 @@ class MLMScorer:
                 ]
                 if win_chunk_abs:
                     rel_all = [i - win_start for i in win_chunk_abs]
-                    for inner in range(0, len(win_chunk_abs), max(1, batch_size)):
-                        sub_abs = win_chunk_abs[inner : inner + max(1, batch_size)]
-                        sub_rel = rel_all[inner : inner + max(1, batch_size)]
+                    inner = 0
+                    chunk_size = max(1, batch_size)
+                    while inner < len(win_chunk_abs):
+                        size = min(chunk_size, len(win_chunk_abs) - inner)
+                        sub_abs = win_chunk_abs[inner : inner + size]
+                        sub_rel = rel_all[inner : inner + size]
                         batch = ids[:, win_start:win_end].repeat(len(sub_abs), 1)
                         for bi, pos_rel in enumerate(sub_rel):
                             batch[bi, pos_rel] = self.mask_token_id
                         attn = tok.attention_mask[:, win_start:win_end].repeat(
                             len(sub_abs), 1
                         )
-                        logits = self.model(input_ids=batch, attention_mask=attn).logits
+                        try:
+                            logits = self.model(
+                                input_ids=batch, attention_mask=attn
+                            ).logits
+                        except torch.cuda.OutOfMemoryError:
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            if chunk_size == 1:
+                                raise
+                            chunk_size = max(1, chunk_size // 2)
+                            continue
                         arange_idx = torch.arange(len(sub_abs), device=logits.device)
                         probs_pos = torch.softmax(logits[arange_idx, sub_rel], dim=-1)
                         true_ids = ids[0, sub_abs]
@@ -162,6 +182,7 @@ class MLMScorer:
                         for pos_abs, s in zip(sub_abs, s_bits):
                             surprisals[pos_abs] = float(s)
                             computed[pos_abs] = True
+                        inner += size
                 if win_end == T:
                     break
                 win_start += stride
@@ -187,15 +208,26 @@ class MLMScorer:
                 rank_by_index[i] = 1
 
         if T <= max_len:
-            for start in range(0, len(eligible), max(1, batch_size)):
-                chunk = eligible[start : start + batch_size]
+            i = 0
+            chunk_size = max(1, batch_size)
+            while i < len(eligible):
+                size = min(chunk_size, len(eligible) - i)
+                chunk = eligible[i : i + size]
                 if not chunk:
-                    continue
+                    break
                 batch = ids.repeat(len(chunk), 1)
                 for bi, pos in enumerate(chunk):
                     batch[bi, pos] = self.mask_token_id
                 attn = tok.attention_mask.repeat(len(chunk), 1)
-                logits = self.model(input_ids=batch, attention_mask=attn).logits
+                try:
+                    logits = self.model(input_ids=batch, attention_mask=attn).logits
+                except torch.cuda.OutOfMemoryError:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if chunk_size == 1:
+                        raise
+                    chunk_size = max(1, chunk_size // 2)
+                    continue
                 arange_idx = torch.arange(len(chunk), device=logits.device)
                 scores_pos = logits[arange_idx, chunk]
                 true_ids = ids[0, chunk]
@@ -203,6 +235,7 @@ class MLMScorer:
                 ranks = (scores_pos > s_true.unsqueeze(-1)).sum(dim=1) + 1
                 for pos, r in zip(chunk, ranks.tolist()):
                     rank_by_index[pos] = int(r)
+                i += size
         else:
             overlap = max(16, max_len // 4)
             stride = max(1, max_len - overlap)
@@ -217,16 +250,29 @@ class MLMScorer:
                 ]
                 if win_chunk_abs:
                     rel_all = [i - win_start for i in win_chunk_abs]
-                    for inner in range(0, len(win_chunk_abs), max(1, batch_size)):
-                        sub_abs = win_chunk_abs[inner : inner + max(1, batch_size)]
-                        sub_rel = rel_all[inner : inner + max(1, batch_size)]
+                    inner = 0
+                    chunk_size = max(1, batch_size)
+                    while inner < len(win_chunk_abs):
+                        size = min(chunk_size, len(win_chunk_abs) - inner)
+                        sub_abs = win_chunk_abs[inner : inner + size]
+                        sub_rel = rel_all[inner : inner + size]
                         batch = ids[:, win_start:win_end].repeat(len(sub_abs), 1)
                         for bi, pos_rel in enumerate(sub_rel):
                             batch[bi, pos_rel] = self.mask_token_id
                         attn = tok.attention_mask[:, win_start:win_end].repeat(
                             len(sub_abs), 1
                         )
-                        logits = self.model(input_ids=batch, attention_mask=attn).logits
+                        try:
+                            logits = self.model(
+                                input_ids=batch, attention_mask=attn
+                            ).logits
+                        except torch.cuda.OutOfMemoryError:
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            if chunk_size == 1:
+                                raise
+                            chunk_size = max(1, chunk_size // 2)
+                            continue
                         arange_idx = torch.arange(len(sub_abs), device=logits.device)
                         scores_pos = logits[arange_idx, sub_rel]
                         true_ids = ids[0, sub_abs]
@@ -235,6 +281,7 @@ class MLMScorer:
                         for pos_abs, r in zip(sub_abs, ranks.tolist()):
                             rank_by_index[pos_abs] = int(r)
                             computed[pos_abs] = True
+                        inner += size
                 if win_end == T:
                     break
                 win_start += stride
@@ -265,18 +312,30 @@ class MLMScorer:
                 result[i] = [int(ids[0, i])]
 
         if T <= max_len:
-            for start in range(0, len(eligible), max(1, batch_size)):
-                chunk = eligible[start : start + batch_size]
+            i = 0
+            chunk_size = max(1, batch_size)
+            while i < len(eligible):
+                size = min(chunk_size, len(eligible) - i)
+                chunk = eligible[i : i + size]
                 if not chunk:
-                    continue
+                    break
                 batch = ids.repeat(len(chunk), 1)
                 for bi, pos in enumerate(chunk):
                     batch[bi, pos] = self.mask_token_id
                 attn = tok.attention_mask.repeat(len(chunk), 1)
-                logits = self.model(input_ids=batch, attention_mask=attn).logits
+                try:
+                    logits = self.model(input_ids=batch, attention_mask=attn).logits
+                except torch.cuda.OutOfMemoryError:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if chunk_size == 1:
+                        raise
+                    chunk_size = max(1, chunk_size // 2)
+                    continue
                 for bi, pos in enumerate(chunk):
                     topk = torch.topk(logits[bi, pos], k=k, dim=-1).indices.tolist()
                     result[pos] = [int(t) for t in topk]
+                i += size
         else:
             overlap = max(16, max_len // 4)
             stride = max(1, max_len - overlap)
@@ -291,16 +350,29 @@ class MLMScorer:
                 ]
                 if win_chunk_abs:
                     rel_all = [i - win_start for i in win_chunk_abs]
-                    for inner in range(0, len(win_chunk_abs), max(1, batch_size)):
-                        sub_abs = win_chunk_abs[inner : inner + max(1, batch_size)]
-                        sub_rel = rel_all[inner : inner + max(1, batch_size)]
+                    inner = 0
+                    chunk_size = max(1, batch_size)
+                    while inner < len(win_chunk_abs):
+                        size = min(chunk_size, len(win_chunk_abs) - inner)
+                        sub_abs = win_chunk_abs[inner : inner + size]
+                        sub_rel = rel_all[inner : inner + size]
                         batch = ids[:, win_start:win_end].repeat(len(sub_abs), 1)
                         for bi, pos_rel in enumerate(sub_rel):
                             batch[bi, pos_rel] = self.mask_token_id
                         attn = tok.attention_mask[:, win_start:win_end].repeat(
                             len(sub_abs), 1
                         )
-                        logits = self.model(input_ids=batch, attention_mask=attn).logits
+                        try:
+                            logits = self.model(
+                                input_ids=batch, attention_mask=attn
+                            ).logits
+                        except torch.cuda.OutOfMemoryError:
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            if chunk_size == 1:
+                                raise
+                            chunk_size = max(1, chunk_size // 2)
+                            continue
                         for bi, pos_abs in enumerate(sub_abs):
                             pos_rel = sub_rel[bi]
                             topk = torch.topk(
@@ -308,6 +380,7 @@ class MLMScorer:
                             ).indices.tolist()
                             result[pos_abs] = [int(t) for t in topk]
                             computed[pos_abs] = True
+                        inner += size
                 if win_end == T:
                     break
                 win_start += stride

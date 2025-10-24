@@ -71,7 +71,9 @@ def main():
         default=64,
         help="Batch size for per-position masking queries to the LM",
     )
-    ap.add_argument("--limit-texts", type=int, default=None, help="Use only first N texts")
+    ap.add_argument(
+        "--limit-texts", type=int, default=None, help="Use only first N texts"
+    )
     args = ap.parse_args()
 
     texts = read_texts(args.texts_file)
@@ -167,7 +169,14 @@ def main():
                         sacrebleu.corpus_chrf(hyps, [refs]).score / 100.0
                     )
                 if bert_score is not None:
-                    _, _, F1 = bert_score(hyps, refs, lang="en")
+                    dev = (
+                        "cuda"
+                        if "torch" in globals()
+                        and hasattr(torch, "cuda")
+                        and torch.cuda.is_available()
+                        else "cpu"
+                    )
+                    _, _, F1 = bert_score(hyps, refs, lang="en", device=dev)
                     results[p_mask]["berts"].append(float(F1.mean().item()))
         for p_mask in args.p_mask_list:
             mb, sb = msd(results[p_mask]["bpc"])
@@ -297,7 +306,14 @@ def main():
                             sacrebleu.corpus_chrf(hyps, [refs]).score / 100.0
                         )
                     if bert_score is not None:
-                        _, _, F1 = bert_score(hyps, refs, lang="en")
+                        dev = (
+                            "cuda"
+                            if "torch" in globals()
+                            and hasattr(torch, "cuda")
+                            and torch.cuda.is_available()
+                            else "cpu"
+                        )
+                        _, _, F1 = bert_score(hyps, refs, lang="en", device=dev)
                         results[(p_mask, K)]["berts"].append(float(F1.mean().item()))
         for p_mask in args.p_mask_list:
             for K in args.rank_list:
@@ -324,7 +340,45 @@ def main():
                 )
 
     pbar.close()
-    if args.out_csv and args.codec == "epc":
+    # Write CSV outputs if requested
+    if args.out_csv and args.codec == "pm":
+        rows = []
+        for p_mask in args.p_mask_list:
+            mb, sb = msd(results[p_mask]["bpc"])
+            mf, sf = msd(results[p_mask]["charfid"])
+            mchr, schr = (
+                msd(results[p_mask]["chrf"])
+                if results[p_mask]["chrf"]
+                else (float("nan"), float("nan"))
+            )
+            mbert, sbert = (
+                msd(results[p_mask]["berts"])
+                if results[p_mask]["berts"]
+                else (float("nan"), float("nan"))
+            )
+            rows.append(
+                {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "codec": "pm",
+                    "model": args.model,
+                    "p_mask": p_mask,
+                    "seeds": args.seeds,
+                    "BPC_mean": mb,
+                    "BPC_sd": sb,
+                    "CharFid_mean": mf,
+                    "CharFid_sd": sf,
+                    "ChrF_mean": mchr,
+                    "ChrF_sd": schr,
+                    "BERTScore_mean": mbert,
+                    "BERTScore_sd": sbert,
+                }
+            )
+        if rows:
+            with open(args.out_csv, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                w.writeheader()
+                w.writerows(rows)
+    elif args.out_csv and args.codec == "epc":
         rows = []
         for p_mask in args.p_mask_list:
             for K in args.rank_list:
@@ -360,10 +414,11 @@ def main():
                         "BERTScore_sd": sbert,
                     }
                 )
-        with open(args.out_csv, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            w.writeheader()
-            w.writerows(rows)
+        if rows:
+            with open(args.out_csv, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                w.writeheader()
+                w.writerows(rows)
 
 
 if __name__ == "__main__":
