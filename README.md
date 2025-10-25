@@ -6,7 +6,7 @@ This repo contains the reference implementation used for the paper “The Lossy 
 - Error‑Bounded Predictive Coding (EPC)
 - Vector Quantisation with Residual Patching (VQ+RE)
 
-A PDF of the paper draft is in `paper/part1.pdf`.
+A PDF of the paper is in `paper/Root.pdf`.
 
 ## What’s Inside
 
@@ -122,4 +122,6 @@ Notes:
 
 If you use this code, please cite the paper:
 
-N. Aghanya, J. Li, K. Wang. "The Lossy Horizon: Error‑Bounded Predictive Coding for Lossy Text Compression (Episode I)", 2025. (See `paper/part1.pdf`.)
+```
+N. Aghanya, J. Li, K. Wang. "The Lossy Horizon: Error‑Bounded Predictive Coding for Lossy Text Compression (Episode I)", 2025.
+```
